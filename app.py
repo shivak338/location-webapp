@@ -4,6 +4,7 @@ import json
 import time
 import random
 import zipfile
+import hashlib
 import datetime as dt
 from typing import Optional, List, Tuple, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,17 +16,19 @@ import requests
 from requests.utils import quote
 import streamlit as st
 
-# ---------------- CONFIG ----------------
+# ---------------- HARD-CODED CONFIG ----------------
 BASE_URL = "https://centraldashboard-beta.moveinsync.com/centralized-dashboard/locations/locations"
 IST = pytz.timezone("Asia/Kolkata")
 
-DEFAULT_BUID = "tepl-tepl1"
+TOKEN_URL = "https://script.google.com/macros/s/AKfycbwIqPMIbFCRNkcTpN_T2iPBFCG8nXE8cvjLlVTje1LprrDC07pir54EPqPIdk4GX0yxmw/exec"
+DEFAULT_BUID = "tepl"
 DEFAULT_DEVICE_TYPE = "FIXED_DEVICE"
-DEFAULT_SEGMENT_HOURS = 3
+DEFAULT_SEGMENT_HOURS = 4
 DEFAULT_WORKERS = 6
 DEFAULT_MIN_INTERVAL_S = 0.25
 TOKEN_REFRESH_INTERVAL_SECONDS = 600
 REQUEST_TIMEOUT_S = 60
+RESULT_CACHE_TTL_SECONDS = 900  # 15 minutes
 
 # ---------------- PAGE ----------------
 st.set_page_config(page_title="Location JSON Fetcher", page_icon="📍", layout="wide")
@@ -65,9 +68,6 @@ def epoch_ms_to_ist_str(epoch_ms: Optional[int]) -> str:
     utc_dt = dt.datetime.utcfromtimestamp(float(epoch_ms) / 1000.0).replace(tzinfo=pytz.utc)
     return utc_dt.astimezone(IST).strftime("%Y-%m-%d %H:%M:%S")
 
-def safe_filename(s: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", s)
-
 def read_imeis_from_uploaded_csv(uploaded_file) -> pd.DataFrame:
     raw = uploaded_file.read()
     uploaded_file.seek(0)
@@ -106,6 +106,18 @@ def make_segment_list(start_ist: dt.datetime, end_ist: dt.datetime, segment_hour
         cur = nxt
     return segs
 
+def build_cache_key(imeis: List[str], start_str: str, end_str: str) -> str:
+    payload = {
+        "imeis": sorted([str(x).strip() for x in imeis]),
+        "start": start_str.strip(),
+        "end": end_str.strip(),
+        "buid": DEFAULT_BUID,
+        "device_type": DEFAULT_DEVICE_TYPE,
+        "segment_hours": DEFAULT_SEGMENT_HOURS,
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
 # ---------------- TOKEN CACHE ----------------
 _token_lock = Lock()
 _cached_token: Optional[str] = None
@@ -128,12 +140,12 @@ def extract_token_from_response(text: str) -> str:
 
     return token
 
-def fetch_new_token(token_source_url: str, timeout: int = 30) -> str:
-    resp = requests.get(token_source_url, timeout=timeout)
+def fetch_new_token(timeout: int = 30) -> str:
+    resp = requests.get(TOKEN_URL, timeout=timeout)
     resp.raise_for_status()
     return extract_token_from_response(resp.text)
 
-def get_token(token_source_url: str, force_refresh: bool = False) -> str:
+def get_token(force_refresh: bool = False) -> str:
     global _cached_token, _cached_token_ts
 
     with _token_lock:
@@ -145,10 +157,34 @@ def get_token(token_source_url: str, force_refresh: bool = False) -> str:
         )
 
         if needs_refresh:
-            _cached_token = fetch_new_token(token_source_url)
+            _cached_token = fetch_new_token()
             _cached_token_ts = now
 
         return _cached_token
+
+# ---------------- RESULT CACHE ----------------
+_result_cache_lock = Lock()
+_result_cache: Dict[str, Dict[str, Any]] = {}
+
+def get_cached_result(cache_key: str) -> Optional[Dict[str, Any]]:
+    with _result_cache_lock:
+        item = _result_cache.get(cache_key)
+        if not item:
+            return None
+
+        age = time.time() - item["ts"]
+        if age > RESULT_CACHE_TTL_SECONDS:
+            del _result_cache[cache_key]
+            return None
+
+        return item["data"]
+
+def set_cached_result(cache_key: str, data: Dict[str, Any]) -> None:
+    with _result_cache_lock:
+        _result_cache[cache_key] = {
+            "ts": time.time(),
+            "data": data,
+        }
 
 # ---------------- THROTTLE / BACKOFF ----------------
 _rate_lock = Lock()
@@ -173,11 +209,8 @@ def compute_backoff_s(attempt: int, base: float, cap: float, jitter: float) -> f
 # ---------------- CORE FETCH ----------------
 def fetch_segment(
     imei: str,
-    buid: str,
-    device_type: str,
     seg_start: dt.datetime,
     seg_end: dt.datetime,
-    token_source_url: str,
     *,
     min_interval_s: float,
     backoff_base_s: float,
@@ -190,10 +223,10 @@ def fetch_segment(
 
     url = (
         f"{BASE_URL}/{imei}"
-        f"?buid={quote(buid)}"
+        f"?buid={quote(DEFAULT_BUID)}"
         f"&startTime={quote(seg_start_str)}"
         f"&endTime={quote(seg_end_str)}"
-        f"&deviceType={quote(device_type)}"
+        f"&deviceType={quote(DEFAULT_DEVICE_TYPE)}"
     )
 
     attempt = 0
@@ -210,8 +243,8 @@ def fetch_segment(
             }
 
         try:
-            token = get_token(token_source_url, force_refresh=False)
-        except Exception as e:
+            token = get_token(force_refresh=False)
+        except Exception:
             sleep_s = compute_backoff_s(attempt, backoff_base_s, backoff_cap_s, backoff_jitter_s)
             time.sleep(sleep_s)
             continue
@@ -220,14 +253,14 @@ def fetch_segment(
 
         try:
             resp = requests.get(url, headers={"x-wis-token": token}, timeout=REQUEST_TIMEOUT_S)
-        except Exception as e:
+        except Exception:
             sleep_s = compute_backoff_s(attempt, backoff_base_s, backoff_cap_s, backoff_jitter_s)
             time.sleep(sleep_s)
             continue
 
         if resp.status_code in (401, 403):
             try:
-                get_token(token_source_url, force_refresh=True)
+                get_token(force_refresh=True)
             except Exception:
                 pass
             sleep_s = max(5.0, compute_backoff_s(attempt, backoff_base_s, backoff_cap_s, backoff_jitter_s))
@@ -237,7 +270,7 @@ def fetch_segment(
         if resp.status_code == 200:
             try:
                 data = resp.json()
-            except Exception as e:
+            except Exception:
                 sleep_s = compute_backoff_s(attempt, backoff_base_s, backoff_cap_s, backoff_jitter_s)
                 time.sleep(sleep_s)
                 continue
@@ -280,14 +313,16 @@ def fetch_segment(
 # ---------------- UI ----------------
 with st.sidebar:
     st.header("Settings")
-    token_url = st.text_input("Token URL", type="password", value=st.secrets.get("TOKEN_URL", ""))
-    buid = st.text_input("BUID", value=DEFAULT_BUID)
-    device_type = st.text_input("Device Type", value=DEFAULT_DEVICE_TYPE)
-    segment_hours = st.number_input("Segment hours", min_value=1, max_value=24, value=DEFAULT_SEGMENT_HOURS)
     workers = st.number_input("Workers", min_value=1, max_value=20, value=DEFAULT_WORKERS)
-    min_interval_s = st.number_input("Min interval between requests (seconds)", min_value=0.0, max_value=5.0, value=DEFAULT_MIN_INTERVAL_S, step=0.05)
+    min_interval_s = st.number_input(
+        "Min interval between requests (seconds)",
+        min_value=0.0,
+        max_value=5.0,
+        value=DEFAULT_MIN_INTERVAL_S,
+        step=0.05,
+    )
     max_attempts = st.number_input("Max attempts per segment (0 = retry forever)", min_value=0, max_value=100, value=5)
-    st.caption("Token refreshes every 10 minutes, and immediately on 401/403.")
+    st.caption("BUID, token URL, segment hours, and device type are fixed internally.")
 
 uploaded_file = st.file_uploader("Upload IMEI CSV", type=["csv"])
 
@@ -303,9 +338,6 @@ if run_clicked:
     if not uploaded_file:
         st.error("Upload a CSV first.")
         st.stop()
-    if not token_url.strip():
-        st.error("Token URL is required.")
-        st.stop()
 
     try:
         start_ist = parse_ist_datetime(start_str)
@@ -315,61 +347,66 @@ if run_clicked:
             st.stop()
 
         # initial token check
-        token = get_token(token_url, force_refresh=True)
+        token = get_token(force_refresh=True)
 
         df = read_imeis_from_uploaded_csv(uploaded_file)
         imeis = df["imei"].tolist()
-        segments = make_segment_list(start_ist, end_ist, int(segment_hours))
+        segments = make_segment_list(start_ist, end_ist, DEFAULT_SEGMENT_HOURS)
         tasks = [(imei, s, e) for imei in imeis for (s, e) in segments]
 
-        st.success(f"Initial token fetch successful. Token length={len(token)}")
-        st.info(f"IMEIs: {len(imeis)} | Segments per IMEI: {len(segments)} | Total tasks: {len(tasks)}")
+        cache_key = build_cache_key(imeis, start_str, end_str)
+        cached_summary = get_cached_result(cache_key)
 
-        progress = st.progress(0, text="Starting...")
-        status_box = st.empty()
+        if cached_summary is not None:
+            st.success("Using cached result from last 15 minutes.")
+            summary = cached_summary
+            cache_used = True
+        else:
+            st.success(f"Initial token fetch successful. Token length={len(token)}")
+            st.info(f"IMEIs: {len(imeis)} | Segments per IMEI: {len(segments)} | Total tasks: {len(tasks)}")
 
-        results: List[Dict[str, Any]] = []
-        completed = 0
-        saved = 0
-        failed = 0
-        total_records = 0
+            progress = st.progress(0, text="Starting...")
+            status_box = st.empty()
 
-        with ThreadPoolExecutor(max_workers=int(workers)) as ex:
-            futures = [
-                ex.submit(
-                    fetch_segment,
-                    imei,
-                    buid,
-                    device_type,
-                    seg_start,
-                    seg_end,
-                    token_url,
-                    min_interval_s=float(min_interval_s),
-                    backoff_base_s=2.0,
-                    backoff_cap_s=60.0,
-                    backoff_jitter_s=1.5,
-                    max_attempts=int(max_attempts),
-                )
-                for imei, seg_start, seg_end in tasks
-            ]
+            results: List[Dict[str, Any]] = []
+            completed = 0
+            saved = 0
+            failed = 0
+            total_records = 0
 
-            for fut in as_completed(futures):
-                r = fut.result()
-                results.append(r)
-                completed += 1
-                if r["status"] == "saved":
-                    saved += 1
-                    total_records += int(r.get("count", 0))
-                else:
-                    failed += 1
+            with ThreadPoolExecutor(max_workers=int(workers)) as ex:
+                futures = [
+                    ex.submit(
+                        fetch_segment,
+                        imei,
+                        seg_start,
+                        seg_end,
+                        min_interval_s=float(min_interval_s),
+                        backoff_base_s=2.0,
+                        backoff_cap_s=60.0,
+                        backoff_jitter_s=1.5,
+                        max_attempts=int(max_attempts),
+                    )
+                    for imei, seg_start, seg_end in tasks
+                ]
 
-                progress.progress(
-                    completed / len(tasks),
-                    text=f"Completed {completed}/{len(tasks)} | Saved={saved} Failed={failed}"
-                )
+                for fut in as_completed(futures):
+                    r = fut.result()
+                    results.append(r)
+                    completed += 1
+                    if r["status"] == "saved":
+                        saved += 1
+                        total_records += int(r.get("count", 0))
+                    else:
+                        failed += 1
 
-                status_box.markdown(
-                    f"""
+                    progress.progress(
+                        completed / len(tasks),
+                        text=f"Completed {completed}/{len(tasks)} | Saved={saved} Failed={failed}"
+                    )
+
+                    status_box.markdown(
+                        f"""
 **Live summary**
 - Total tasks: {len(tasks)}
 - Completed: {completed}
@@ -377,26 +414,33 @@ if run_clicked:
 - Failed: {failed}
 - Total location rows fetched: {total_records}
 """
-                )
+                    )
 
-        summary = {
-            "runAtIst": dt.datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-            "buid": buid,
-            "deviceType": device_type,
-            "startInput": start_str,
-            "endInput": end_str,
-            "segmentHours": int(segment_hours),
-            "imeiCount": len(imeis),
-            "totalTasks": len(tasks),
-            "savedTasks": saved,
-            "failedTasks": failed,
-            "totalLocationRowsFetched": total_records,
-            "results": results,
-        }
+            summary = {
+                "runAtIst": dt.datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                "cacheTtlSeconds": RESULT_CACHE_TTL_SECONDS,
+                "cacheUsed": False,
+                "buid": DEFAULT_BUID,
+                "deviceType": DEFAULT_DEVICE_TYPE,
+                "segmentHours": DEFAULT_SEGMENT_HOURS,
+                "startInput": start_str,
+                "endInput": end_str,
+                "imeiCount": len(imeis),
+                "totalTasks": len(tasks),
+                "savedTasks": saved,
+                "failedTasks": failed,
+                "totalLocationRowsFetched": total_records,
+                "results": results,
+            }
+
+            set_cached_result(cache_key, summary)
+            cache_used = False
+
+        summary = dict(summary)
+        summary["cacheUsed"] = cache_used
 
         json_bytes = json.dumps(summary, ensure_ascii=False, indent=2).encode("utf-8")
 
-        # zip version with one summary.json
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("summary.json", json.dumps(summary, ensure_ascii=False, indent=2))
@@ -404,13 +448,18 @@ if run_clicked:
 
         st.subheader("Final summary")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("IMEIs", len(imeis))
-        m2.metric("Tasks saved", saved)
-        m3.metric("Tasks failed", failed)
-        m4.metric("Rows fetched", total_records)
+        m1.metric("IMEIs", summary.get("imeiCount", 0))
+        m2.metric("Tasks saved", summary.get("savedTasks", 0))
+        m3.metric("Tasks failed", summary.get("failedTasks", 0))
+        m4.metric("Rows fetched", summary.get("totalLocationRowsFetched", 0))
+
+        if summary.get("cacheUsed"):
+            st.info("Result source: cache (valid for 15 minutes)")
+        else:
+            st.info("Result source: fresh API fetch")
 
         preview_rows = []
-        for x in results[:200]:
+        for x in summary.get("results", [])[:200]:
             preview_rows.append({
                 "imei": x.get("imei"),
                 "segment_start": x.get("segment_start"),
@@ -421,10 +470,12 @@ if run_clicked:
             })
         st.dataframe(pd.DataFrame(preview_rows), use_container_width=True)
 
+        ts = dt.datetime.now(IST).strftime("%Y%m%d_%H%M%S")
+
         st.download_button(
             "Download full JSON",
             data=json_bytes,
-            file_name=f"location_results_{dt.datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.json",
+            file_name=f"location_results_{ts}.json",
             mime="application/json",
             use_container_width=True,
         )
@@ -432,7 +483,7 @@ if run_clicked:
         st.download_button(
             "Download ZIP",
             data=zip_buffer.getvalue(),
-            file_name=f"location_results_{dt.datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.zip",
+            file_name=f"location_results_{ts}.zip",
             mime="application/zip",
             use_container_width=True,
         )
