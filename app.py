@@ -178,6 +178,33 @@ def inject_theme() -> None:
         }
         .stTextInput input, .stDateInput input, .stTimeInput input, .stNumberInput input {
             border-radius: 12px !important;
+            background: #ffffff !important;
+            color: #17324d !important;
+            border: 1px solid rgba(95,168,211,0.28) !important;
+        }
+        .stTextInput label, .stDateInput label, .stTimeInput label, .stNumberInput label,
+        .stFileUploader label, .stRadio label, .stMarkdown, .stCaption {
+            color: #35536f !important;
+        }
+        .stRadio [role="radiogroup"] label, .stRadio [role="radiogroup"] p {
+            color: #17324d !important;
+            opacity: 1 !important;
+            font-weight: 600 !important;
+        }
+        .stRadio [data-baseweb="radio"] > div:first-child {
+            background: #ffffff !important;
+            border-color: rgba(95,168,211,0.55) !important;
+        }
+        div[data-testid="stFileUploader"] section {
+            border-radius: 18px !important;
+            border: 1px dashed rgba(95,168,211,0.45) !important;
+            background: rgba(255,255,255,0.88) !important;
+        }
+        div[data-testid="stFileUploader"] button {
+            background: linear-gradient(180deg, #d8edf8 0%, #c4e3f1 100%) !important;
+            color: #17324d !important;
+            border: 1px solid rgba(95,168,211,0.25) !important;
+            box-shadow: none !important;
         }
         .mis-login-wrap {
             max-width: 440px;
@@ -314,14 +341,13 @@ def show_notice(title: str, body: str) -> None:
     )
 
 
-def show_processing_panel(title: str, body: str, active_step: int = 1) -> None:
+def show_processing_panel(title: str, body: str, active_step: int = 1, target=None) -> None:
     steps = ["Preparing input", "Calling APIs", "Building files"]
     chips = []
     for idx, label in enumerate(steps, start=1):
         state = "active" if idx == active_step else "done" if idx < active_step else ""
         chips.append(f'<span class="mis-step {state}">{idx}. {label}</span>')
-    st.markdown(
-        f"""
+    html = f"""
         <div class="mis-status">
             <div class="mis-loader">
                 <div class="mis-loader-visual">
@@ -335,9 +361,11 @@ def show_processing_panel(title: str, body: str, active_step: int = 1) -> None:
                 </div>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """
+    if target is None:
+        st.markdown(html, unsafe_allow_html=True)
+    else:
+        target.markdown(html, unsafe_allow_html=True)
 
 
 def auto_download_bytes(data: bytes, file_name: str, mime: str, key: str) -> None:
@@ -378,22 +406,22 @@ def check_password() -> bool:
             <p>Choose raw location download or distance calculation after login. The app keeps processing in memory, uses multiple workers, and packages outputs as ZIP files.</p>
         </div>
         <div class="mis-login-wrap">
-            <p class="mis-login-note"><b>Enter your workspace password</b> to continue.</p>
+            <p class="mis-login-note"><b>Enter your password</b> to continue.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
     with st.form("login_form", clear_on_submit=False):
-        pwd = st.text_input("Workspace password", type="password", placeholder="Enter password")
-        submitted = st.form_submit_button("Enter workspace", use_container_width=True)
+        pwd = st.text_input("Password", type="password", placeholder="Password")
+        submitted = st.form_submit_button("Log in", use_container_width=True)
 
     if submitted:
         if pwd == st.secrets["APP_PASSWORD"]:
             st.session_state["authenticated"] = True
             st.rerun()
         else:
-            show_notice("Access not granted", "The password entered did not match the workspace password.")
+            show_notice("Access not granted", "The password entered did not match the configured password.")
     return False
 
 
@@ -450,6 +478,13 @@ def read_imeis_from_uploaded_csv(uploaded_file) -> pd.DataFrame:
     df["imei"] = df["imei"].astype(str).str.strip()
     df = df[df["imei"].str.len() > 0].drop_duplicates(subset=["imei"]).reset_index(drop=True)
     return df
+
+
+def normalize_imei_for_api(imei: str) -> str:
+    value = str(imei).strip()
+    if value.startswith("3") and not value.startswith("0"):
+        return f"0{value}"
+    return value
 
 
 def make_segment_list(start_ist: dt.datetime, end_ist: dt.datetime, segment_hours: int) -> List[Tuple[dt.datetime, dt.datetime]]:
@@ -515,6 +550,7 @@ def flatten_raw_results(results: List[Dict[str, Any]]) -> pd.DataFrame:
             rows.append(
                 {
                     "IMEI": item.get("imei", ""),
+                    "API_IMEI": item.get("api_imei", normalize_imei_for_api(item.get("imei", ""))),
                     "Segment_Start": item.get("segment_start", ""),
                     "Segment_End": item.get("segment_end", ""),
                     "Status": item.get("status", ""),
@@ -533,6 +569,7 @@ def flatten_raw_results(results: List[Dict[str, Any]]) -> pd.DataFrame:
             rows.append(
                 {
                     "IMEI": item.get("imei", ""),
+                    "API_IMEI": item.get("api_imei", normalize_imei_for_api(item.get("imei", ""))),
                     "Segment_Start": item.get("segment_start", ""),
                     "Segment_End": item.get("segment_end", ""),
                     "Status": item.get("status", ""),
@@ -556,6 +593,7 @@ def flatten_raw_results(results: List[Dict[str, Any]]) -> pd.DataFrame:
             rows.append(
                 {
                     "IMEI": item.get("imei", ""),
+                    "API_IMEI": item.get("api_imei", normalize_imei_for_api(item.get("imei", ""))),
                     "Segment_Start": item.get("segment_start", ""),
                     "Segment_End": item.get("segment_end", ""),
                     "Status": item.get("status", ""),
@@ -569,7 +607,7 @@ def flatten_raw_results(results: List[Dict[str, Any]]) -> pd.DataFrame:
             )
 
     if not rows:
-        return pd.DataFrame(columns=["IMEI", "Segment_Start", "Segment_End", "Status", "Latitude", "Longitude", "Timestamp_IST", "ServerTime_IST", "Operational_Day", "Error"])
+        return pd.DataFrame(columns=["IMEI", "API_IMEI", "Segment_Start", "Segment_End", "Status", "Latitude", "Longitude", "Timestamp_IST", "ServerTime_IST", "Operational_Day", "Error"])
     return pd.DataFrame(rows)
 
 
@@ -578,6 +616,7 @@ def preview_summary_df(results: List[Dict[str, Any]]) -> pd.DataFrame:
         [
             {
                 "IMEI": x.get("imei"),
+                "API_IMEI": x.get("api_imei", normalize_imei_for_api(x.get("imei", ""))),
                 "Segment Start": x.get("segment_start"),
                 "Segment End": x.get("segment_end"),
                 "Status": x.get("status"),
@@ -691,8 +730,9 @@ def fetch_segment(
     seg_start_str = seg_start.strftime("%d-%m-%Y %H:%M")
     seg_end_str = seg_end.strftime("%d-%m-%Y %H:%M")
 
+    api_imei = normalize_imei_for_api(imei)
     url = (
-        f"{BASE_URL}/{imei}"
+        f"{BASE_URL}/{api_imei}"
         f"?buid={quote(DEFAULT_BUID)}"
         f"&startTime={quote(seg_start_str)}"
         f"&endTime={quote(seg_end_str)}"
@@ -705,6 +745,7 @@ def fetch_segment(
         if max_attempts > 0 and attempt > max_attempts:
             return {
                 "imei": imei,
+                "api_imei": api_imei,
                 "segment_start": seg_start_str,
                 "segment_end": seg_end_str,
                 "status": "failed",
@@ -755,6 +796,7 @@ def fetch_segment(
 
             return {
                 "imei": imei,
+                "api_imei": api_imei,
                 "segment_start": seg_start_str,
                 "segment_end": seg_end_str,
                 "status": "saved",
@@ -782,6 +824,7 @@ def fetch_run_payload(
     workers: int,
     min_interval_s: float,
     max_attempts: int,
+    panel_target=None,
 ) -> Dict[str, Any]:
     segments = make_segment_list(start_dt, end_dt, DEFAULT_SEGMENT_HOURS)
     tasks = [(imei, s, e) for imei in imeis for (s, e) in segments]
@@ -792,6 +835,7 @@ def fetch_run_payload(
         "Processing request",
         f"Collecting location history for {len(imeis)} IMEIs from {start_dt.strftime('%d/%m/%Y %H:%M')} to {end_dt.strftime('%d/%m/%Y %H:%M')} IST.",
         active_step=2,
+        target=panel_target,
     )
 
     results: List[Dict[str, Any]] = []
@@ -989,6 +1033,7 @@ def process_raw_run(uploaded_file, start_text: str, end_text: str, workers: int,
             workers=int(workers),
             min_interval_s=float(min_interval_s),
             max_attempts=int(max_attempts),
+            panel_target=panel_target,
         )
         payload["cacheUsed"] = False
         set_cached_result(cache_key, payload)
@@ -1006,74 +1051,162 @@ def process_raw_run(uploaded_file, start_text: str, end_text: str, workers: int,
     return payload, preview_df, zip_bytes
 
 
-def process_distance_run(uploaded_file, mode: str, workers: int, min_interval_s: float, max_attempts: int, day_input: Optional[str] = None, start_text: Optional[str] = None, end_text: Optional[str] = None) -> Tuple[pd.DataFrame, Dict[str, Any], bytes]:
+def build_operational_range_windows(start_day: dt.date, end_day: dt.date) -> List[Tuple[str, dt.datetime, dt.datetime]]:
+    if end_day < start_day:
+        raise RuntimeError("End date must be on or after start date.")
+    windows: List[Tuple[str, dt.datetime, dt.datetime]] = []
+    cur = start_day
+    while cur <= end_day:
+        op_start, op_end = operational_window_for_date(cur)
+        windows.append((cur.strftime("%d/%m/%Y"), op_start, op_end))
+        cur += dt.timedelta(days=1)
+    return windows
+
+
+def aggregate_operational_summary(detail_df: pd.DataFrame) -> pd.DataFrame:
+    if detail_df.empty:
+        return pd.DataFrame(columns=["IMEI", "Distance_KM", "Valid_Segments", "Ignored_Segments", "Point_Count", "Operational_Days", "First_Location", "First_Location_Time", "Last_Location", "Last_Location_Time", "Comment"])
+    grouped = detail_df.groupby("IMEI", dropna=False).agg(
+        Distance_KM=("Distance_KM", "sum"),
+        Valid_Segments=("Valid_Segments", "sum"),
+        Ignored_Segments=("Ignored_Segments", "sum"),
+        Point_Count=("Point_Count", "sum"),
+        Operational_Days=("Operational_Day", "nunique"),
+        First_Location_Time=("First_Location_Time", "min"),
+        Last_Location_Time=("Last_Location_Time", "max"),
+    ).reset_index()
+    first_loc = detail_df.sort_values(["IMEI", "Operational_Day"]).groupby("IMEI", dropna=False)["First_Location"].first().reset_index(name="First_Location")
+    last_loc = detail_df.sort_values(["IMEI", "Operational_Day"]).groupby("IMEI", dropna=False)["Last_Location"].last().reset_index(name="Last_Location")
+    comments = detail_df.groupby("IMEI", dropna=False)["Comment"].apply(lambda s: "; ".join(sorted({str(x).strip() for x in s if str(x).strip()}))).reset_index(name="Comment")
+    grouped = grouped.merge(first_loc, on="IMEI", how="left").merge(last_loc, on="IMEI", how="left").merge(comments, on="IMEI", how="left")
+    grouped["Distance_KM"] = grouped["Distance_KM"].round(2)
+    grouped = grouped[["IMEI", "Distance_KM", "Valid_Segments", "Ignored_Segments", "Point_Count", "Operational_Days", "First_Location", "First_Location_Time", "Last_Location", "Last_Location_Time", "Comment"]]
+    return grouped.sort_values(["Distance_KM", "IMEI"], ascending=[False, True]).reset_index(drop=True)
+
+
+def fetch_operational_payload_for_window(imeis: List[str], label: str, op_start: dt.datetime, op_end: dt.datetime, workers: int, min_interval_s: float, max_attempts: int, panel_target=None) -> Dict[str, Any]:
+    cache_key = build_cache_key(imeis, op_start.strftime("%d/%m/%Y %H:%M"), op_end.strftime("%d/%m/%Y %H:%M"), workers)
+    cached = get_cached_result(cache_key)
+    if cached is not None:
+        raw_payload = dict(cached)
+        raw_payload["cacheUsed"] = True
+    else:
+        raw_payload = fetch_run_payload(
+            imeis=imeis,
+            start_dt=op_start,
+            end_dt=op_end,
+            workers=int(workers),
+            min_interval_s=float(min_interval_s),
+            max_attempts=int(max_attempts),
+            panel_target=panel_target,
+        )
+        raw_payload["cacheUsed"] = False
+        set_cached_result(cache_key, raw_payload)
+    for item in raw_payload.get("results", []):
+        item["operational_day"] = label
+    raw_payload["operationalDayLabel"] = label
+    return raw_payload
+
+
+def process_distance_run(uploaded_file, mode: str, workers: int, min_interval_s: float, max_attempts: int, day_input: Optional[str] = None, start_text: Optional[str] = None, end_text: Optional[str] = None, start_day_text: Optional[str] = None, end_day_text: Optional[str] = None, panel_target=None) -> Tuple[pd.DataFrame, Dict[str, Any], bytes]:
     get_token(force_refresh=True)
     imei_df = read_imeis_from_uploaded_csv(uploaded_file)
     imeis = imei_df["imei"].tolist()
 
     if mode == "operational":
-        if not day_input:
-            raise RuntimeError("Operational day is required.")
-        day = parse_ist_date_slash(day_input)
-        op_start, op_end = operational_window_for_date(day)
-        label = day.strftime("%d/%m/%Y")
-        cache_key = build_cache_key(imeis, op_start.strftime("%d/%m/%Y %H:%M"), op_end.strftime("%d/%m/%Y %H:%M"), workers)
-        cached = get_cached_result(cache_key)
-        if cached is not None:
-            raw_payload = dict(cached)
-            raw_payload["cacheUsed"] = True
-            show_notice("Using in-memory operational data", f"The 3 AM to 3 AM operational window for {label} was found in cache.")
-        else:
-            raw_payload = fetch_run_payload(
-                imeis=imeis,
-                start_dt=op_start,
-                end_dt=op_end,
-                workers=int(workers),
-                min_interval_s=float(min_interval_s),
-                max_attempts=int(max_attempts),
-            )
-            for item in raw_payload.get("results", []):
-                item["operational_day"] = label
-            raw_payload["cacheUsed"] = False
-            set_cached_result(cache_key, raw_payload)
-    else:
-        if not start_text or not end_text:
-            raise RuntimeError("Selected time range is required.")
-        start_dt = parse_ist_datetime_slash(start_text, with_seconds=True)
-        end_dt = parse_ist_datetime_slash(end_text, with_seconds=True)
-        if end_dt <= start_dt:
-            raise RuntimeError("End time must be after start time.")
-        cache_key = build_cache_key(imeis, start_text, end_text, workers)
-        cached = get_cached_result(cache_key)
-        if cached is not None:
-            raw_payload = dict(cached)
-            raw_payload["cacheUsed"] = True
-            show_notice("Using in-memory selected-range data", "This time-range distance request was found in cache.")
-        else:
-            raw_payload = fetch_run_payload(
-                imeis=imeis,
-                start_dt=start_dt,
-                end_dt=end_dt,
-                workers=int(workers),
-                min_interval_s=float(min_interval_s),
-                max_attempts=int(max_attempts),
-            )
-            raw_payload["cacheUsed"] = False
-            set_cached_result(cache_key, raw_payload)
+        if not start_day_text or not end_day_text:
+            raise RuntimeError("Start date and end date are required for operational-day calculation.")
+        start_day = parse_ist_date_slash(start_day_text)
+        end_day = parse_ist_date_slash(end_day_text)
+        windows = build_operational_range_windows(start_day, end_day)
+        all_results: List[Dict[str, Any]] = []
+        payloads: List[Dict[str, Any]] = []
+        detail_frames: List[pd.DataFrame] = []
+        cache_hits = 0
 
-    show_processing_panel("Calculating distance", "The app is now converting fetched GPS points into a distance summary with speed filtering.", active_step=3)
+        for idx, (label, op_start, op_end) in enumerate(windows, start=1):
+            show_processing_panel(
+                f"Calculating operational day {idx} of {len(windows)}",
+                f"Fetching raw GPS data for {label} using the 03:00 to next-day 03:00 operational-day window.",
+                active_step=2,
+                target=panel_target,
+            )
+            raw_payload = fetch_operational_payload_for_window(imeis, label, op_start, op_end, workers, min_interval_s, max_attempts, panel_target=panel_target)
+            if raw_payload.get("cacheUsed"):
+                cache_hits += 1
+            payloads.append(raw_payload)
+            all_results.extend(raw_payload.get("results", []))
+            detail_df = compute_distance_summary(raw_payload.get("results", []))
+            detail_df.insert(0, "Operational_Day", label)
+            detail_df.insert(1, "Window_Start", op_start.strftime("%d/%m/%Y %H:%M:%S"))
+            detail_df.insert(2, "Window_End", op_end.strftime("%d/%m/%Y %H:%M:%S"))
+            detail_frames.append(detail_df)
+
+        detailed_df = pd.concat(detail_frames, ignore_index=True) if detail_frames else pd.DataFrame(columns=["Operational_Day", "Window_Start", "Window_End"])
+        summary_df = aggregate_operational_summary(detailed_df)
+        combined_payload = {
+            "runAtIst": dt.datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+            "mode": "operational",
+            "operationalStartDate": start_day.strftime("%d/%m/%Y"),
+            "operationalEndDate": end_day.strftime("%d/%m/%Y"),
+            "operationalDayCount": len(windows),
+            "imeiCount": len(imeis),
+            "cacheUsed": cache_hits > 0,
+            "cacheHits": cache_hits,
+            "cacheMisses": max(0, len(windows) - cache_hits),
+            "totalTasks": sum(int(x.get("totalTasks", 0)) for x in payloads),
+            "savedTasks": sum(int(x.get("savedTasks", 0)) for x in payloads),
+            "failedTasks": sum(int(x.get("failedTasks", 0)) for x in payloads),
+            "totalLocationRowsFetched": sum(int(x.get("totalLocationRowsFetched", 0)) for x in payloads),
+            "results": all_results,
+            "operationalPayloads": payloads,
+        }
+        show_processing_panel("Calculating distance", "The app is preparing both the daily operational-detail CSV and the overall summary CSV.", active_step=3, target=panel_target)
+        flat_df = flatten_raw_results(all_results)
+        ts = dt.datetime.now(IST).strftime('%Y%m%d_%H%M%S')
+        zip_bytes = build_zip({
+            f"distance_summary_{ts}.csv": csv_bytes_from_df(summary_df),
+            f"distance_operational_detail_{ts}.csv": csv_bytes_from_df(detailed_df),
+            f"distance_raw_data_{ts}.csv": csv_bytes_from_df(flat_df),
+            f"distance_raw_payload_{ts}.json": json_download_bytes(combined_payload),
+        })
+        return summary_df, combined_payload, zip_bytes
+
+    if not start_text or not end_text:
+        raise RuntimeError("Selected time range is required.")
+    start_dt = parse_ist_datetime_slash(start_text, with_seconds=True)
+    end_dt = parse_ist_datetime_slash(end_text, with_seconds=True)
+    if end_dt <= start_dt:
+        raise RuntimeError("End time must be after start time.")
+    cache_key = build_cache_key(imeis, start_text, end_text, workers)
+    cached = get_cached_result(cache_key)
+    if cached is not None:
+        raw_payload = dict(cached)
+        raw_payload["cacheUsed"] = True
+        show_notice("Using in-memory selected-range data", "This time-range distance request was found in cache.")
+    else:
+        raw_payload = fetch_run_payload(
+            imeis=imeis,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            workers=int(workers),
+            min_interval_s=float(min_interval_s),
+            max_attempts=int(max_attempts),
+            panel_target=panel_target,
+        )
+        raw_payload["cacheUsed"] = False
+        set_cached_result(cache_key, raw_payload)
+
+    show_processing_panel("Calculating distance", "The app is now converting fetched GPS points into a distance summary with speed filtering.", active_step=3, target=panel_target)
     distance_df = compute_distance_summary(raw_payload.get("results", []))
     flat_df = flatten_raw_results(raw_payload.get("results", []))
-
-    zip_bytes = build_zip(
-        {
-            f"distance_summary_{dt.datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.csv": csv_bytes_from_df(distance_df),
-            f"distance_raw_data_{dt.datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.csv": csv_bytes_from_df(flat_df),
-            f"distance_raw_payload_{dt.datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.json": json_download_bytes(raw_payload),
-        }
-    )
+    ts = dt.datetime.now(IST).strftime('%Y%m%d_%H%M%S')
+    zip_bytes = build_zip({
+        f"distance_summary_{ts}.csv": csv_bytes_from_df(distance_df),
+        f"distance_raw_data_{ts}.csv": csv_bytes_from_df(flat_df),
+        f"distance_raw_payload_{ts}.json": json_download_bytes(raw_payload),
+    })
     return distance_df, raw_payload, zip_bytes
-
 
 # ---------------- HEADER ----------------
 st.markdown(
@@ -1081,7 +1214,7 @@ st.markdown(
     <div class="mis-hero">
         <div class="mis-badge">MoveInSync-style operational intelligence</div>
         <h1>Think Office Commute.<br>Think of Us.</h1>
-        <p>After login, choose one route: download raw data for an exact date-time range, or calculate distance using either an operational day or a selected time range. Files are bundled as ZIP by default.</p>
+        <p>After login, choose one route: download raw data for an exact date-time range, or calculate distance using either operational-day windows across a date range or a selected time range. Files are bundled as ZIP by default.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -1139,7 +1272,7 @@ if nav_page == "home":
             """
             <div class="mis-page-card">
                 <h3>Calculate distance</h3>
-                <p>Open the distance page and choose either <b>Operational day</b> for 3 AM to 3 AM, or <b>Selected time range</b> for an exact hh:mm:ss window. The app fetches data, calculates distance, and packages everything as a ZIP.</p>
+                <p>Open the distance page and choose either <b>Operational day</b> for 3 AM to 3 AM windows across a start and end date range, or <b>Selected time range</b> for an exact hh:mm:ss window. The app fetches data, calculates distance, and packages everything as a ZIP.</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1206,7 +1339,7 @@ elif nav_page == "raw":
 # ---------------- PAGE: DISTANCE ----------------
 elif nav_page == "distance":
     st.markdown("## Distance calculation")
-    show_notice("Distance mode", "Choose how the data window should be defined. Operational day uses 3 AM to 3 AM and only needs a date. Selected time range uses exact dd/mm/yyyy hh:mm:ss values.")
+    show_notice("Distance mode", "Choose how the data window should be defined. Operational day uses 3 AM to 3 AM for every day between the start and end dates. Selected time range uses exact dd/mm/yyyy hh:mm:ss values.")
 
     distance_file = st.file_uploader("Upload IMEI CSV", type=["csv"], key="distance_imei_file")
     mode_choice = st.radio(
@@ -1218,7 +1351,11 @@ elif nav_page == "distance":
 
     if mode_choice == "Operational day":
         st.session_state["distance_mode"] = "operational"
-        day_input = st.text_input("Operational day (dd/mm/yyyy)", value=dt.datetime.now(IST).strftime("%d/%m/%Y"), key="op_day")
+        c1, c2 = st.columns(2)
+        with c1:
+            op_start_day = st.text_input("Operational start date (dd/mm/yyyy)", value=dt.datetime.now(IST).strftime("%d/%m/%Y"), key="op_start_day")
+        with c2:
+            op_end_day = st.text_input("Operational end date (dd/mm/yyyy)", value=dt.datetime.now(IST).strftime("%d/%m/%Y"), key="op_end_day")
         range_start = None
         range_end = None
     else:
@@ -1228,7 +1365,8 @@ elif nav_page == "distance":
             range_start = st.text_input("Start IST (dd/mm/yyyy hh:mm:ss)", value=dt.datetime.now(IST).strftime("%d/%m/%Y 00:00:00"), key="dist_start")
         with c2:
             range_end = st.text_input("End IST (dd/mm/yyyy hh:mm:ss)", value=dt.datetime.now(IST).strftime("%d/%m/%Y %H:%M:%S"), key="dist_end")
-        day_input = None
+        op_start_day = None
+        op_end_day = None
 
     calc_label = "Please wait, calculating distance..." if st.session_state.get("processing") else "Calculate distance"
     calc_clicked = st.button(calc_label, use_container_width=True, key="run_distance")
@@ -1247,7 +1385,8 @@ elif nav_page == "distance":
                         workers=workers,
                         min_interval_s=min_interval_s,
                         max_attempts=max_attempts,
-                        day_input=day_input,
+                        start_day_text=op_start_day,
+                        end_day_text=op_end_day,
                     )
                 else:
                     distance_df, raw_payload, distance_zip = process_distance_run(
@@ -1281,7 +1420,7 @@ elif nav_page == "distance":
 
                 st.dataframe(distance_df, use_container_width=True, height=420)
                 zip_name = f"distance_bundle_{dt.datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.zip"
-                show_notice("ZIP bundle ready", "The app is attempting to start the ZIP download automatically. If the browser blocks it, use the backup button below.")
+                show_notice("ZIP bundle ready", "The app is attempting to start the ZIP download automatically. If the browser blocks it, use the backup button below. Operational-day mode includes both the summary CSV and a day-by-day detailed CSV for each IMEI.")
                 auto_download_bytes(distance_zip, zip_name, "application/zip", "distzip")
                 st.download_button("Download distance ZIP again", data=distance_zip, file_name=zip_name, mime="application/zip", use_container_width=True)
             except Exception as exc:
