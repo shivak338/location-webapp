@@ -2,6 +2,7 @@ import io
 import re
 import json
 import time
+import math
 import random
 import zipfile
 import hashlib
@@ -24,15 +25,165 @@ TOKEN_URL = "https://script.google.com/macros/s/AKfycbwIqPMIbFCRNkcTpN_T2iPBFCG8
 DEFAULT_BUID = "tepl"
 DEFAULT_DEVICE_TYPE = "FIXED_DEVICE"
 DEFAULT_SEGMENT_HOURS = 4
-DEFAULT_WORKERS = 6
-DEFAULT_MIN_INTERVAL_S = 0.25
+DEFAULT_WORKERS = 8
+DEFAULT_MIN_INTERVAL_S = 0.20
 TOKEN_REFRESH_INTERVAL_SECONDS = 600
 REQUEST_TIMEOUT_S = 60
-RESULT_CACHE_TTL_SECONDS = 900  # 15 minutes
+RESULT_CACHE_TTL_SECONDS = 900  # 15 mins
+MAX_SPEED_KMPH = 100.0
+APP_TITLE = "MoveInSync Location Intelligence"
 
 # ---------------- PAGE ----------------
-st.set_page_config(page_title="Location JSON Fetcher", page_icon="📍", layout="wide")
-st.title("📍 Location JSON Fetcher")
+st.set_page_config(page_title=APP_TITLE, page_icon="📍", layout="wide")
+
+# ---------------- THEME ----------------
+def inject_theme() -> None:
+    st.markdown(
+        """
+        <style>
+        :root {
+            --mis-green: #53c21b;
+            --mis-green-dark: #2d8f0c;
+            --mis-bg: #f3fbef;
+            --mis-text: #121316;
+            --mis-subtle: #687076;
+            --mis-card: #ffffff;
+            --mis-border: rgba(0,0,0,0.08);
+            --mis-shadow: 0 12px 30px rgba(18,19,22,0.08);
+            --mis-radius: 20px;
+        }
+        .stApp {
+            background: linear-gradient(180deg, #f6fcf2 0%, #eef8ea 100%);
+            color: var(--mis-text);
+        }
+        .block-container {
+            padding-top: 1.2rem;
+            padding-bottom: 2rem;
+            max-width: 1280px;
+        }
+        .mis-hero {
+            background: radial-gradient(circle at top left, rgba(83,194,27,0.18), transparent 38%), linear-gradient(135deg, #eff9ea 0%, #f7fcf5 55%, #edf8e9 100%);
+            border: 1px solid rgba(83,194,27,0.14);
+            border-radius: 28px;
+            padding: 28px 30px;
+            box-shadow: var(--mis-shadow);
+            margin-bottom: 1rem;
+        }
+        .mis-badge {
+            display: inline-block;
+            padding: 7px 12px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.2px;
+            background: rgba(83,194,27,0.10);
+            color: var(--mis-green-dark);
+            margin-bottom: 12px;
+        }
+        .mis-hero h1 {
+            margin: 0 0 10px 0;
+            font-size: 52px;
+            line-height: 1.03;
+            font-weight: 800;
+            letter-spacing: -1.6px;
+            color: var(--mis-text);
+        }
+        .mis-hero p {
+            margin: 0;
+            font-size: 18px;
+            line-height: 1.5;
+            color: #4f5b62;
+            max-width: 760px;
+        }
+        .mis-card {
+            background: var(--mis-card);
+            border: 1px solid var(--mis-border);
+            border-radius: var(--mis-radius);
+            padding: 20px 22px;
+            box-shadow: var(--mis-shadow);
+        }
+        .mis-kpi {
+            background: white;
+            border: 1px solid var(--mis-border);
+            border-radius: 18px;
+            padding: 18px 18px 14px 18px;
+            box-shadow: 0 8px 22px rgba(18,19,22,0.06);
+        }
+        .mis-kpi .label {
+            color: var(--mis-subtle);
+            font-size: 13px;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+        .mis-kpi .value {
+            font-size: 32px;
+            line-height: 1;
+            font-weight: 800;
+            color: var(--mis-text);
+        }
+        .mis-kpi .sub {
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--mis-subtle);
+        }
+        .mis-tabnote {
+            color: var(--mis-subtle);
+            font-size: 14px;
+            margin-bottom: 14px;
+        }
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+        .stTabs [data-baseweb="tab"] {
+            height: 50px;
+            padding-left: 18px;
+            padding-right: 18px;
+            background: rgba(255,255,255,0.88);
+            border: 1px solid rgba(0,0,0,0.06);
+            border-radius: 14px;
+            font-weight: 700;
+        }
+        .stTabs [aria-selected="true"] {
+            background: rgba(83,194,27,0.14) !important;
+            color: #1e4010 !important;
+            border-color: rgba(83,194,27,0.35) !important;
+        }
+        .stButton > button, .stDownloadButton > button {
+            border-radius: 14px !important;
+            border: none !important;
+            background: linear-gradient(180deg, #58cb1d 0%, #45b117 100%) !important;
+            color: white !important;
+            font-weight: 700 !important;
+            box-shadow: 0 10px 24px rgba(83,194,27,0.28);
+            min-height: 46px;
+        }
+        .stButton > button:hover, .stDownloadButton > button:hover {
+            background: linear-gradient(180deg, #4cb418 0%, #3f9b14 100%) !important;
+        }
+        div[data-testid="stFileUploader"] section {
+            border-radius: 18px !important;
+            border: 1px dashed rgba(83,194,27,0.45) !important;
+            background: rgba(255,255,255,0.68) !important;
+        }
+        div[data-testid="stMetric"] {
+            background: white;
+            border: 1px solid rgba(0,0,0,0.06);
+            border-radius: 18px;
+            padding: 16px;
+            box-shadow: 0 8px 22px rgba(18,19,22,0.06);
+        }
+        .mis-footer {
+            font-size: 13px;
+            color: var(--mis-subtle);
+            margin-top: 8px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+inject_theme()
 
 # ---------------- AUTH ----------------
 def check_password() -> bool:
@@ -43,9 +194,20 @@ def check_password() -> bool:
     if st.session_state.get("authenticated", False):
         return True
 
+    st.markdown(
+        """
+        <div class="mis-hero">
+            <div class="mis-badge">Secure access</div>
+            <h1>Think Office Commute.<br>Think of Us.</h1>
+            <p>Upload IMEIs, fetch raw location history, calculate distance in-memory, and download operational outputs with a premium MoveInSync-style experience.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     with st.form("login_form", clear_on_submit=False):
         pwd = st.text_input("Enter access password", type="password")
-        submitted = st.form_submit_button("Unlock")
+        submitted = st.form_submit_button("Unlock workspace", use_container_width=True)
 
     if submitted:
         if pwd == st.secrets["APP_PASSWORD"]:
@@ -106,7 +268,7 @@ def make_segment_list(start_ist: dt.datetime, end_ist: dt.datetime, segment_hour
         cur = nxt
     return segs
 
-def build_cache_key(imeis: List[str], start_str: str, end_str: str) -> str:
+def build_cache_key(imeis: List[str], start_str: str, end_str: str, workers: int) -> str:
     payload = {
         "imeis": sorted([str(x).strip() for x in imeis]),
         "start": start_str.strip(),
@@ -114,9 +276,22 @@ def build_cache_key(imeis: List[str], start_str: str, end_str: str) -> str:
         "buid": DEFAULT_BUID,
         "device_type": DEFAULT_DEVICE_TYPE,
         "segment_hours": DEFAULT_SEGMENT_HOURS,
+        "workers": int(workers),
     }
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    avg_lat = (lat1 + lat2) / 2
+    lat_dist = (lat2 - lat1) * 111
+    lon_dist = (lon2 - lon1) * 111 * math.cos(avg_lat * math.pi / 180)
+    return math.sqrt(lat_dist**2 + lon_dist**2)
+
+def json_download_bytes(payload: Dict[str, Any]) -> bytes:
+    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+def csv_bytes_from_df(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8")
 
 # ---------------- TOKEN CACHE ----------------
 _token_lock = Lock()
@@ -125,10 +300,8 @@ _cached_token_ts: float = 0.0
 
 def extract_token_from_response(text: str) -> str:
     token = text.strip()
-
     if token.startswith('"') and token.endswith('"'):
         token = token[1:-1]
-
     token = token.replace('""', '"').strip()
 
     if not token:
@@ -137,7 +310,6 @@ def extract_token_from_response(text: str) -> str:
         raise RuntimeError("Token URL returned HTML instead of token.")
     if len(token) < 20:
         raise RuntimeError(f"Downloaded token looks too short: {token!r}")
-
     return token
 
 def fetch_new_token(timeout: int = 30) -> str:
@@ -147,7 +319,6 @@ def fetch_new_token(timeout: int = 30) -> str:
 
 def get_token(force_refresh: bool = False) -> str:
     global _cached_token, _cached_token_ts
-
     with _token_lock:
         now = time.time()
         needs_refresh = (
@@ -155,11 +326,9 @@ def get_token(force_refresh: bool = False) -> str:
             or _cached_token is None
             or (now - _cached_token_ts) >= TOKEN_REFRESH_INTERVAL_SECONDS
         )
-
         if needs_refresh:
             _cached_token = fetch_new_token()
             _cached_token_ts = now
-
         return _cached_token
 
 # ---------------- RESULT CACHE ----------------
@@ -171,20 +340,15 @@ def get_cached_result(cache_key: str) -> Optional[Dict[str, Any]]:
         item = _result_cache.get(cache_key)
         if not item:
             return None
-
         age = time.time() - item["ts"]
         if age > RESULT_CACHE_TTL_SECONDS:
             del _result_cache[cache_key]
             return None
-
         return item["data"]
 
 def set_cached_result(cache_key: str, data: Dict[str, Any]) -> None:
     with _result_cache_lock:
-        _result_cache[cache_key] = {
-            "ts": time.time(),
-            "data": data,
-        }
+        _result_cache[cache_key] = {"ts": time.time(), "data": data}
 
 # ---------------- THROTTLE / BACKOFF ----------------
 _rate_lock = Lock()
@@ -232,7 +396,6 @@ def fetch_segment(
     attempt = 0
     while True:
         attempt += 1
-
         if max_attempts > 0 and attempt > max_attempts:
             return {
                 "imei": imei,
@@ -244,7 +407,7 @@ def fetch_segment(
 
         try:
             token = get_token(force_refresh=False)
-        except Exception:
+        except Exception as e:
             sleep_s = compute_backoff_s(attempt, backoff_base_s, backoff_cap_s, backoff_jitter_s)
             time.sleep(sleep_s)
             continue
@@ -310,29 +473,158 @@ def fetch_segment(
             "error": f"http_{resp.status_code}: {resp.text[:300]}",
         }
 
-# ---------------- UI ----------------
+def compute_distance_summary(results: List[Dict[str, Any]]) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+    by_imei: Dict[str, List[Dict[str, Any]]] = {}
+
+    for item in results:
+        if item.get("status") != "saved":
+            continue
+        imei = str(item.get("imei", "")).strip()
+        if not imei:
+            continue
+        by_imei.setdefault(imei, []).extend(item.get("data", []))
+
+    for imei, entries in by_imei.items():
+        normalized_points = []
+        bad_rows = 0
+
+        for entry in entries:
+            loc = entry.get("locationCO", {})
+            geo = str(loc.get("geocords", "")).strip()
+            ts = loc.get("timestamp")
+            if not geo or ts in (None, ""):
+                bad_rows += 1
+                continue
+            try:
+                lat_s, lon_s = geo.split(",")
+                lat = float(lat_s)
+                lon = float(lon_s)
+                ts_ist = dt.datetime.fromtimestamp(float(ts) / 1000.0, tz=pytz.utc).astimezone(IST)
+                normalized_points.append((ts_ist, lat, lon, geo))
+            except Exception:
+                bad_rows += 1
+
+        if not normalized_points:
+            rows.append(
+                {
+                    "IMEI": imei,
+                    "Distance_KM": 0.0,
+                    "Valid_Segments": 0,
+                    "Ignored_Segments": 0,
+                    "Point_Count": 0,
+                    "First_Location": "",
+                    "First_Location_Time": "",
+                    "Last_Location": "",
+                    "Last_Location_Time": "",
+                    "Comment": "No usable points",
+                }
+            )
+            continue
+
+        normalized_points.sort(key=lambda x: x[0])
+        total_dist = 0.0
+        valid_segments = 0
+        ignored_segments = 0
+        comments = []
+
+        for idx in range(1, len(normalized_points)):
+            prev_ts, prev_lat, prev_lon, _ = normalized_points[idx - 1]
+            curr_ts, curr_lat, curr_lon, _ = normalized_points[idx]
+
+            dist = calculate_distance(prev_lat, prev_lon, curr_lat, curr_lon)
+            dt_seconds = (curr_ts - prev_ts).total_seconds()
+            if dt_seconds <= 0:
+                ignored_segments += 1
+                continue
+
+            speed = dist / (dt_seconds / 3600.0)
+            if speed > MAX_SPEED_KMPH:
+                ignored_segments += 1
+                comments.append(f"Ignored {dist:.2f}km at {speed:.0f}km/h")
+                continue
+
+            total_dist += dist
+            valid_segments += 1
+
+        first = normalized_points[0]
+        last = normalized_points[-1]
+        comment = []
+        if bad_rows:
+            comment.append(f"Bad rows skipped={bad_rows}")
+        if comments:
+            comment.append(comments[0])
+
+        rows.append(
+            {
+                "IMEI": imei,
+                "Distance_KM": round(total_dist, 2),
+                "Valid_Segments": valid_segments,
+                "Ignored_Segments": ignored_segments,
+                "Point_Count": len(normalized_points),
+                "First_Location": f"{first[1]:.5f},{first[2]:.5f}",
+                "First_Location_Time": first[0].strftime("%d/%m/%Y %H:%M:%S"),
+                "Last_Location": f"{last[1]:.5f},{last[2]:.5f}",
+                "Last_Location_Time": last[0].strftime("%d/%m/%Y %H:%M:%S"),
+                "Comment": "; ".join(comment),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "IMEI",
+                "Distance_KM",
+                "Valid_Segments",
+                "Ignored_Segments",
+                "Point_Count",
+                "First_Location",
+                "First_Location_Time",
+                "Last_Location",
+                "Last_Location_Time",
+                "Comment",
+            ]
+        )
+
+    return pd.DataFrame(rows).sort_values(["Distance_KM", "IMEI"], ascending=[False, True]).reset_index(drop=True)
+
+# ---------------- HEADER ----------------
+st.markdown(
+    """
+    <div class="mis-hero">
+        <div class="mis-badge">MoveInSync-style operational intelligence</div>
+        <h1>Think Office Commute.<br>Think of Us.</h1>
+        <p>Upload IMEIs, fetch raw GPS history with multiple workers, calculate distance using the same speed-filtered approach, cache in memory till the next run, and download raw or summary outputs instantly.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ---------------- SIDEBAR ----------------
 with st.sidebar:
-    st.header("Settings")
-    workers = st.number_input("Workers", min_value=1, max_value=20, value=DEFAULT_WORKERS)
-    min_interval_s = st.number_input(
-        "Min interval between requests (seconds)",
-        min_value=0.0,
-        max_value=5.0,
-        value=DEFAULT_MIN_INTERVAL_S,
-        step=0.05,
-    )
-    max_attempts = st.number_input("Max attempts per segment (0 = retry forever)", min_value=0, max_value=100, value=5)
-    st.caption("BUID, token URL, segment hours, and device type are fixed internally.")
+    st.markdown("### Workspace controls")
+    workers = st.slider("Workers", min_value=1, max_value=24, value=DEFAULT_WORKERS)
+    min_interval_s = st.slider("Min interval between requests (seconds)", min_value=0.00, max_value=2.00, value=float(DEFAULT_MIN_INTERVAL_S), step=0.05)
+    max_attempts = st.number_input("Max attempts per segment", min_value=1, max_value=100, value=5)
+    st.markdown("---")
+    st.caption("Hardcoded internally")
+    st.caption(f"BUID: {DEFAULT_BUID}")
+    st.caption(f"Device Type: {DEFAULT_DEVICE_TYPE}")
+    st.caption(f"Segment Hours: {DEFAULT_SEGMENT_HOURS}")
+    st.caption("Token source: internal")
 
-uploaded_file = st.file_uploader("Upload IMEI CSV", type=["csv"])
+# ---------------- INPUTS ----------------
+left, right = st.columns([1.3, 1])
+with left:
+    uploaded_file = st.file_uploader("Upload IMEI CSV", type=["csv"])
+with right:
+    c1, c2 = st.columns(2)
+    with c1:
+        start_str = st.text_input("Start IST (DD-MM-YYYY HH:MM)", value="01-02-2026 00:00")
+    with c2:
+        end_str = st.text_input("End IST (DD-MM-YYYY HH:MM)", value="01-02-2026 23:59")
 
-c1, c2 = st.columns(2)
-with c1:
-    start_str = st.text_input("Start IST (DD-MM-YYYY HH:MM)", value="01-02-2026 00:00")
-with c2:
-    end_str = st.text_input("End IST (DD-MM-YYYY HH:MM)", value="01-02-2026 23:59")
-
-run_clicked = st.button("Fetch location data", type="primary", use_container_width=True)
+run_clicked = st.button("Run location intelligence", type="primary", use_container_width=True)
 
 if run_clicked:
     if not uploaded_file:
@@ -346,33 +638,26 @@ if run_clicked:
             st.error("End must be after start.")
             st.stop()
 
-        # initial token check
         token = get_token(force_refresh=True)
-
         df = read_imeis_from_uploaded_csv(uploaded_file)
         imeis = df["imei"].tolist()
         segments = make_segment_list(start_ist, end_ist, DEFAULT_SEGMENT_HOURS)
         tasks = [(imei, s, e) for imei in imeis for (s, e) in segments]
+        cache_key = build_cache_key(imeis, start_str, end_str, workers)
 
-        cache_key = build_cache_key(imeis, start_str, end_str)
         cached_summary = get_cached_result(cache_key)
-
         if cached_summary is not None:
-            st.success("Using cached result from last 15 minutes.")
-            summary = cached_summary
-            cache_used = True
+            payload = cached_summary
+            payload["cacheUsed"] = True
+            st.success("Using cached result from memory for this exact run input.")
         else:
-            st.success(f"Initial token fetch successful. Token length={len(token)}")
-            st.info(f"IMEIs: {len(imeis)} | Segments per IMEI: {len(segments)} | Total tasks: {len(tasks)}")
-
-            progress = st.progress(0, text="Starting...")
+            progress = st.progress(0, text="Starting location fetch...")
             status_box = st.empty()
-
             results: List[Dict[str, Any]] = []
             completed = 0
             saved = 0
             failed = 0
-            total_records = 0
+            total_rows = 0
 
             with ThreadPoolExecutor(max_workers=int(workers)) as ex:
                 futures = [
@@ -391,35 +676,28 @@ if run_clicked:
                 ]
 
                 for fut in as_completed(futures):
-                    r = fut.result()
-                    results.append(r)
+                    item = fut.result()
+                    results.append(item)
                     completed += 1
-                    if r["status"] == "saved":
+                    if item.get("status") == "saved":
                         saved += 1
-                        total_records += int(r.get("count", 0))
+                        total_rows += int(item.get("count", 0))
                     else:
                         failed += 1
 
                     progress.progress(
                         completed / len(tasks),
-                        text=f"Completed {completed}/{len(tasks)} | Saved={saved} Failed={failed}"
+                        text=f"Completed {completed}/{len(tasks)} | Saved={saved} | Failed={failed} | Rows={total_rows}",
                     )
-
                     status_box.markdown(
-                        f"""
-**Live summary**
-- Total tasks: {len(tasks)}
-- Completed: {completed}
-- Saved: {saved}
-- Failed: {failed}
-- Total location rows fetched: {total_records}
-"""
+                        f"<div class='mis-card'><b>Live summary</b><div class='mis-footer'>Tasks: {len(tasks)} | Completed: {completed} | Saved: {saved} | Failed: {failed} | Location rows: {total_rows}</div></div>",
+                        unsafe_allow_html=True,
                     )
 
-            summary = {
+            raw_summary = {
                 "runAtIst": dt.datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                "cacheTtlSeconds": RESULT_CACHE_TTL_SECONDS,
                 "cacheUsed": False,
+                "cacheTtlSeconds": RESULT_CACHE_TTL_SECONDS,
                 "buid": DEFAULT_BUID,
                 "deviceType": DEFAULT_DEVICE_TYPE,
                 "segmentHours": DEFAULT_SEGMENT_HOURS,
@@ -429,64 +707,105 @@ if run_clicked:
                 "totalTasks": len(tasks),
                 "savedTasks": saved,
                 "failedTasks": failed,
-                "totalLocationRowsFetched": total_records,
-                "results": results,
+                "totalLocationRowsFetched": total_rows,
+                "results": sorted(results, key=lambda x: (str(x.get("imei", "")), str(x.get("segment_start", "")))),
             }
 
-            set_cached_result(cache_key, summary)
-            cache_used = False
+            distance_df = compute_distance_summary(raw_summary["results"])
+            payload = {
+                "raw_summary": raw_summary,
+                "distance_summary": distance_df.to_dict(orient="records"),
+                "cacheUsed": False,
+            }
+            set_cached_result(cache_key, payload)
 
-        summary = dict(summary)
-        summary["cacheUsed"] = cache_used
-
-        json_bytes = json.dumps(summary, ensure_ascii=False, indent=2).encode("utf-8")
-
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("summary.json", json.dumps(summary, ensure_ascii=False, indent=2))
-        zip_buffer.seek(0)
-
-        st.subheader("Final summary")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("IMEIs", summary.get("imeiCount", 0))
-        m2.metric("Tasks saved", summary.get("savedTasks", 0))
-        m3.metric("Tasks failed", summary.get("failedTasks", 0))
-        m4.metric("Rows fetched", summary.get("totalLocationRowsFetched", 0))
-
-        if summary.get("cacheUsed"):
-            st.info("Result source: cache (valid for 15 minutes)")
-        else:
-            st.info("Result source: fresh API fetch")
-
-        preview_rows = []
-        for x in summary.get("results", [])[:200]:
-            preview_rows.append({
-                "imei": x.get("imei"),
-                "segment_start": x.get("segment_start"),
-                "segment_end": x.get("segment_end"),
-                "status": x.get("status"),
-                "count": x.get("count", 0),
-                "error": x.get("error", ""),
-            })
-        st.dataframe(pd.DataFrame(preview_rows), use_container_width=True)
-
-        ts = dt.datetime.now(IST).strftime("%Y%m%d_%H%M%S")
-
-        st.download_button(
-            "Download full JSON",
-            data=json_bytes,
-            file_name=f"location_results_{ts}.json",
-            mime="application/json",
-            use_container_width=True,
+        raw_summary = payload["raw_summary"]
+        distance_df = pd.DataFrame(payload.get("distance_summary", []))
+        raw_results = raw_summary.get("results", [])
+        raw_preview_df = pd.DataFrame(
+            [
+                {
+                    "IMEI": x.get("imei"),
+                    "Segment Start": x.get("segment_start"),
+                    "Segment End": x.get("segment_end"),
+                    "Status": x.get("status"),
+                    "Count": x.get("count", 0),
+                    "Error": x.get("error", ""),
+                }
+                for x in raw_results
+            ]
         )
 
-        st.download_button(
-            "Download ZIP",
-            data=zip_buffer.getvalue(),
-            file_name=f"location_results_{ts}.zip",
-            mime="application/zip",
-            use_container_width=True,
-        )
+        total_distance = float(distance_df["Distance_KM"].sum()) if not distance_df.empty and "Distance_KM" in distance_df.columns else 0.0
+        unique_imeis = int(raw_summary.get("imeiCount", 0))
+        rows_fetched = int(raw_summary.get("totalLocationRowsFetched", 0))
+        failed_tasks = int(raw_summary.get("failedTasks", 0))
+
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            st.markdown(f"<div class='mis-kpi'><div class='label'>IMEIs</div><div class='value'>{unique_imeis}</div><div class='sub'>Unique uploaded devices</div></div>", unsafe_allow_html=True)
+        with k2:
+            st.markdown(f"<div class='mis-kpi'><div class='label'>Location rows</div><div class='value'>{rows_fetched}</div><div class='sub'>Fetched into memory</div></div>", unsafe_allow_html=True)
+        with k3:
+            st.markdown(f"<div class='mis-kpi'><div class='label'>Distance (km)</div><div class='value'>{total_distance:,.2f}</div><div class='sub'>Speed-filtered summary</div></div>", unsafe_allow_html=True)
+        with k4:
+            st.markdown(f"<div class='mis-kpi'><div class='label'>Failed tasks</div><div class='value'>{failed_tasks}</div><div class='sub'>{'Cache hit' if payload.get('cacheUsed') else 'Fresh API run'}</div></div>", unsafe_allow_html=True)
+
+        raw_tab, distance_tab, downloads_tab = st.tabs(["Raw Output", "Distance Summary", "Downloads"])
+
+        with raw_tab:
+            st.markdown("<div class='mis-tabnote'>Raw API output summary across all IMEI and segment calls. This stays in memory until the next run or app restart.</div>", unsafe_allow_html=True)
+            st.dataframe(raw_preview_df, use_container_width=True, height=460)
+
+        with distance_tab:
+            st.markdown("<div class='mis-tabnote'>Distance is calculated using the same speed-filtered logic as your uploaded script, where unrealistic jumps above the configured threshold are ignored.</div>", unsafe_allow_html=True)
+            st.dataframe(distance_df, use_container_width=True, height=460)
+
+        with downloads_tab:
+            raw_json_bytes = json_download_bytes(raw_summary)
+            distance_csv_bytes = csv_bytes_from_df(distance_df if not distance_df.empty else pd.DataFrame(columns=["IMEI", "Distance_KM"]))
+            raw_csv_bytes = csv_bytes_from_df(raw_preview_df if not raw_preview_df.empty else pd.DataFrame(columns=["IMEI", "Segment Start", "Segment End", "Status", "Count", "Error"]))
+
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("raw_summary.json", raw_json_bytes)
+                zf.writestr("raw_summary.csv", raw_csv_bytes)
+                zf.writestr("distance_summary.csv", distance_csv_bytes)
+            zip_buffer.seek(0)
+
+            d1, d2 = st.columns(2)
+            with d1:
+                st.download_button(
+                    "Download raw JSON",
+                    data=raw_json_bytes,
+                    file_name=f"raw_summary_{dt.datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+                st.download_button(
+                    "Download raw CSV",
+                    data=raw_csv_bytes,
+                    file_name=f"raw_summary_{dt.datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            with d2:
+                st.download_button(
+                    "Download distance summary CSV",
+                    data=distance_csv_bytes,
+                    file_name=f"distance_summary_{dt.datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+                st.download_button(
+                    "Download everything as ZIP",
+                    data=zip_buffer.getvalue(),
+                    file_name=f"location_intelligence_{dt.datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                )
+
+        st.markdown("<div class='mis-footer'>Inspired by the MoveInSync website style. Runs with multiple workers, token-based authentication, in-memory processing, and short-lived caching for repeat runs.</div>", unsafe_allow_html=True)
 
     except Exception as e:
         st.error(f"Error: {e}")
