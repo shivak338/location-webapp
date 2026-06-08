@@ -1009,7 +1009,8 @@ def build_zip(files: Dict[str, bytes]) -> bytes:
     return zip_buffer.getvalue()
 
 
-def process_raw_run(uploaded_file, start_text: str, end_text: str, workers: int, min_interval_s: float, max_attempts: int) -> Tuple[Dict[str, Any], pd.DataFrame, bytes]:
+# ---- FIX: added panel_target=None parameter ----
+def process_raw_run(uploaded_file, start_text: str, end_text: str, workers: int, min_interval_s: float, max_attempts: int, panel_target=None) -> Tuple[Dict[str, Any], pd.DataFrame, bytes]:
     start_dt = parse_ist_datetime_slash(start_text)
     end_dt = parse_ist_datetime_slash(end_text)
     if end_dt <= start_dt:
@@ -1305,8 +1306,9 @@ elif nav_page == "raw":
         else:
             try:
                 st.session_state["processing"] = True
-                show_processing_panel("Preparing raw-data fetch", "Validating the uploaded IMEIs and building the API request windows.", active_step=1)
-                raw_payload, raw_preview_df, raw_zip = process_raw_run(raw_file, raw_start, raw_end, workers, min_interval_s, max_attempts)
+                panel_target = st.empty()
+                show_processing_panel("Preparing raw-data fetch", "Validating the uploaded IMEIs and building the API request windows.", active_step=1, target=panel_target)
+                raw_payload, raw_preview_df, raw_zip = process_raw_run(raw_file, raw_start, raw_end, workers, min_interval_s, max_attempts, panel_target=panel_target)
                 st.session_state["last_raw_payload"] = raw_payload
                 st.session_state["last_raw_zip"] = raw_zip
                 st.session_state["processing"] = False
@@ -1377,7 +1379,8 @@ elif nav_page == "distance":
         else:
             try:
                 st.session_state["processing"] = True
-                show_processing_panel("Preparing distance request", "Checking inputs and getting the right raw GPS window for the selected mode.", active_step=1)
+                panel_target = st.empty()
+                show_processing_panel("Preparing distance request", "Checking inputs and getting the right raw GPS window for the selected mode.", active_step=1, target=panel_target)
                 if st.session_state["distance_mode"] == "operational":
                     distance_df, raw_payload, distance_zip = process_distance_run(
                         distance_file,
@@ -1387,6 +1390,7 @@ elif nav_page == "distance":
                         max_attempts=max_attempts,
                         start_day_text=op_start_day,
                         end_day_text=op_end_day,
+                        panel_target=panel_target,
                     )
                 else:
                     distance_df, raw_payload, distance_zip = process_distance_run(
@@ -1397,6 +1401,7 @@ elif nav_page == "distance":
                         max_attempts=max_attempts,
                         start_text=range_start,
                         end_text=range_end,
+                        panel_target=panel_target,
                     )
                 st.session_state["last_distance_df"] = distance_df.to_dict(orient="records")
                 st.session_state["last_distance_zip"] = distance_zip
