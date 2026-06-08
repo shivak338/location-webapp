@@ -1009,6 +1009,60 @@ def build_zip(files: Dict[str, bytes]) -> bytes:
     return zip_buffer.getvalue()
 
 
+def build_per_imei_csvs(results: List[Dict[str, Any]]) -> Dict[str, bytes]:
+    """
+    For each IMEI, flatten every raw JSON entry from the API into rows
+    with no filtering at all — every field from locationCO is included as-is.
+    Returns a dict of {filename: csv_bytes} ready to drop into a ZIP subfolder.
+    """
+    by_imei: Dict[str, List[Dict[str, Any]]] = {}
+    for item in results:
+        imei = str(item.get("imei", "unknown")).strip()
+        by_imei.setdefault(imei, []).append(item)
+
+    files: Dict[str, bytes] = {}
+    for imei, items in by_imei.items():
+        rows = []
+        for item in items:
+            seg_start = item.get("segment_start", "")
+            seg_end = item.get("segment_end", "")
+            status = item.get("status", "")
+            api_imei = item.get("api_imei", normalize_imei_for_api(imei))
+
+            if item.get("status") != "saved" or not item.get("data"):
+                rows.append({
+                    "IMEI": imei,
+                    "API_IMEI": api_imei,
+                    "Segment_Start": seg_start,
+                    "Segment_End": seg_end,
+                    "Status": status,
+                    "Error": item.get("error", ""),
+                })
+                continue
+
+            for entry in (item.get("data") or []):
+                loc = entry.get("locationCO", {})
+                # Flatten every key in locationCO without any filtering
+                row = {
+                    "IMEI": imei,
+                    "API_IMEI": api_imei,
+                    "Segment_Start": seg_start,
+                    "Segment_End": seg_end,
+                    "Status": status,
+                }
+                for k, v in loc.items():
+                    row[k] = v
+                rows.append(row)
+
+        if rows:
+            df = pd.DataFrame(rows)
+            # Sanitise IMEI for use as filename (remove chars unsafe for filenames)
+            safe_imei = "".join(c for c in imei if c.isalnum() or c in ("_", "-"))
+            files[f"per_imei/{safe_imei}.csv"] = csv_bytes_from_df(df)
+
+    return files
+
+
 # ---- FIX: added panel_target=None parameter ----
 def process_raw_run(uploaded_file, start_text: str, end_text: str, workers: int, min_interval_s: float, max_attempts: int, panel_target=None) -> Tuple[Dict[str, Any], pd.DataFrame, bytes]:
     start_dt = parse_ist_datetime_slash(start_text)
@@ -1041,14 +1095,17 @@ def process_raw_run(uploaded_file, start_text: str, end_text: str, workers: int,
 
     preview_df = preview_summary_df(payload.get("results", []))
     flat_df = flatten_raw_results(payload.get("results", []))
+    ts = dt.datetime.now(IST).strftime('%Y%m%d_%H%M%S')
 
-    zip_bytes = build_zip(
-        {
-            f"raw_summary_{dt.datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.json": json_download_bytes(payload),
-            f"raw_data_{dt.datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.csv": csv_bytes_from_df(flat_df),
-            f"raw_segments_{dt.datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.csv": csv_bytes_from_df(preview_df),
-        }
-    )
+    zip_files = {
+        f"raw_summary_{ts}.json": json_download_bytes(payload),
+        f"raw_data_{ts}.csv": csv_bytes_from_df(flat_df),
+        f"raw_segments_{ts}.csv": csv_bytes_from_df(preview_df),
+    }
+    # Add one CSV per IMEI (no filtering, all raw locationCO fields)
+    zip_files.update(build_per_imei_csvs(payload.get("results", [])))
+
+    zip_bytes = build_zip(zip_files)
     return payload, preview_df, zip_bytes
 
 
